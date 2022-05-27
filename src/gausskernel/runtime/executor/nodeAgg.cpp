@@ -150,7 +150,7 @@
 static void initialize_aggregates(
     AggState* aggstate, AggStatePerAgg peragg, AggStatePerGroup pergroup, int numReset = 0);
 static void advance_transition_function(
-    AggState* aggstate, AggStatePerAgg peraggstate, AggStatePerGroup pergroupstate, FunctionCallInfoData* fcinfo);
+    AggState* aggstate, AggStatePerAgg peraggstate, AggStatePerGroup pergroupstate);
 static void advance_aggregates(AggState* aggstate, AggStatePerGroup pergroup);
 static void process_ordered_aggregate_single(
     AggState* aggstate, AggStatePerAgg peraggstate, AggStatePerGroup pergroupstate);
@@ -410,24 +410,27 @@ static void initialize_aggregates(AggState* aggstate, AggStatePerAgg peragg, Agg
  * Given new input value(s), advance the transition function of an aggregate.
  *
  * The new values (and null flags) have been preloaded into argument positions
- * 1 and up in fcinfo, so that we needn't copy them again to pass to the
- * transition function.  No other fields of fcinfo are assumed valid.
+ * 1 and up in peraggstate->transfn_fcinfo, so that we needn't copy them again
+ * to pass to the transition function.	We also expect that the static fields
+ * of the fcinfo are already initialized; that was done by ExecInitAgg().
  *
  * It doesn't matter which memory context this is called in.
  */
 static void advance_transition_function(
-    AggState* aggstate, AggStatePerAgg peraggstate, AggStatePerGroup pergroupstate, FunctionCallInfoData* fcinfo)
+    AggState* aggstate, AggStatePerAgg peraggstate, AggStatePerGroup pergroupstate)
 {
-    int numTransInputs = peraggstate->numTransInputs;
+    FunctionCallInfo fcinfo = &peraggstate->transfn_fcinfo;
     MemoryContext oldContext;
     Datum newVal;
-    int i;
 
     if (peraggstate->transfn.fn_strict) {
         /*
          * For a strict transfn, nothing happens when there's a NULL input; we
          * just keep the prior transValue.
          */
+        int numTransInputs = peraggstate->numTransInputs;
+        int i;
+
         for (i = 1; i <= numTransInputs; i++) {
             if (fcinfo->argnull[i])
                 return;
@@ -470,8 +473,6 @@ static void advance_transition_function(
     /*
      * OK to call the transition function
      */
-    InitFunctionCallInfoData(
-        *fcinfo, &(peraggstate->transfn), numTransInputs + 1, peraggstate->aggCollation, (Node*)aggstate, NULL);
     fcinfo->arg[0] = pergroupstate->transValue;
     fcinfo->argnull[0] = pergroupstate->transValueIsNull;
     fcinfo->argTypes[0] = InvalidOid;
@@ -656,18 +657,15 @@ static void advance_aggregates(AggState* aggstate, AggStatePerGroup pergroup)
             }
         } else {
             /* We can apply the transition function immediately */
-            FunctionCallInfoData fcinfo;
-
-            /* init the number of arguments to a function. */
-            InitFunctionCallInfoArgs(fcinfo, numTransInputs + 1, 1);
+            FunctionCallInfo fcinfo = &peraggstate->transfn_fcinfo;
 
             /* Load values into fcinfo */
             /* Start from 1, since the 0th arg will be the transition value */
             Assert(slot->tts_nvalid >= numTransInputs);
             for (i = 0; i < numTransInputs; i++) {
-                fcinfo.arg[i + 1] = slot->tts_values[i];
-                fcinfo.argnull[i + 1] = slot->tts_isnull[i];
-                fcinfo.argTypes[i + 1] = InvalidOid;
+                fcinfo->arg[i + 1] = slot->tts_values[i];
+                fcinfo->argnull[i + 1] = slot->tts_isnull[i];
+                fcinfo->argTypes[i + 1] = InvalidOid;
             }
             for (setno = 0; setno < numGroupingSets; setno++) {
                 AggStatePerGroup pergroupstate = &pergroup[aggno + (setno * numAggs)];
@@ -682,11 +680,13 @@ static void advance_aggregates(AggState* aggstate, AggStatePerGroup pergroup)
                     /*
                      * we are collecting results sent by the Datanodes, so advance
                      * collections instead of transitions
+                     * XXX: because the collectfn and transfn won't be use at same time
+                     * we can use transfn here safely
                      */
-                    advance_collection_function(aggstate, peraggstate, pergroupstate, &fcinfo);
+                    advance_collection_function(aggstate, peraggstate, pergroupstate, fcinfo);
                 } else
 #endif
-                    advance_transition_function(aggstate, peraggstate, pergroupstate, &fcinfo);
+                    advance_transition_function(aggstate, peraggstate, pergroupstate);
             }
         }
     }
@@ -723,20 +723,20 @@ static void process_ordered_aggregate_single(
     MemoryContext workcontext = aggstate->tmpcontext->ecxt_per_tuple_memory;
     MemoryContext oldContext;
     bool isDistinct = (peraggstate->numDistinctCols > 0);
+    FunctionCallInfo fcinfo = &peraggstate->transfn_fcinfo;
     Datum* newVal = NULL;
     bool* isNull = NULL;
-    FunctionCallInfoData fcinfo;
 
     Assert(peraggstate->numDistinctCols < 2);
 
     tuplesort_performsort(peraggstate->sortstates[aggstate->current_set]);
 
     /* init the number of arguments to a function. */
-    InitFunctionCallInfoArgs(fcinfo, peraggstate->numArguments + 1, 1);
+    InitFunctionCallInfoArgs(*fcinfo, peraggstate->numArguments + 1, 1);
 
     /* Load the column into argument 1 (arg 0 will be transition value) */
-    newVal = fcinfo.arg + 1;
-    isNull = fcinfo.argnull + 1;
+    newVal = fcinfo->arg + 1;
+    isNull = fcinfo->argnull + 1;
 
     /*
      * Note: if input type is pass-by-ref, the datums returned by the sort are
@@ -763,7 +763,7 @@ static void process_ordered_aggregate_single(
             if (!peraggstate->inputtypeByVal && !*isNull)
                 pfree(DatumGetPointer(*newVal));
         } else {
-            advance_transition_function(aggstate, peraggstate, pergroupstate, &fcinfo);
+            advance_transition_function(aggstate, peraggstate, pergroupstate);
             /* forget the old value, if any */
             if (!oldIsNull && !peraggstate->inputtypeByVal)
                 pfree(DatumGetPointer(oldVal));
@@ -796,7 +796,7 @@ static void process_ordered_aggregate_multi(
     AggState* aggstate, AggStatePerAgg peraggstate, AggStatePerGroup pergroupstate)
 {
     MemoryContext workcontext = aggstate->tmpcontext->ecxt_per_tuple_memory;
-    FunctionCallInfoData fcinfo;
+    FunctionCallInfo fcinfo = &peraggstate->transfn_fcinfo;
     TupleTableSlot* slot1 = peraggstate->evalslot;
     TupleTableSlot* slot2 = peraggstate->uniqslot;
     int numTransInputs = peraggstate->numTransInputs;
@@ -823,16 +823,16 @@ static void process_ordered_aggregate_multi(
             !execTuplesMatch(
                 slot1, slot2, numDistinctCols, peraggstate->sortColIdx, peraggstate->equalfns, workcontext)) {
             /* init the number of arguments to a function. */
-            InitFunctionCallInfoArgs(fcinfo, numTransInputs + 1, 1);
+            InitFunctionCallInfoArgs(*fcinfo, numTransInputs + 1, 1);
 
             /* Load values into fcinfo */
             /* Start from 1, since the 0th arg will be the transition value */
             for (i = 0; i < numTransInputs; i++) {
-                fcinfo.arg[i + 1] = slot1->tts_values[i];
-                fcinfo.argnull[i + 1] = slot1->tts_isnull[i];
+                fcinfo->arg[i + 1] = slot1->tts_values[i];
+                fcinfo->argnull[i + 1] = slot1->tts_isnull[i];
             }
 
-            advance_transition_function(aggstate, peraggstate, pergroupstate, &fcinfo);
+            advance_transition_function(aggstate, peraggstate, pergroupstate);
 
             if (numDistinctCols > 0) {
                 /* swap the slot pointers to retain the current tuple */
@@ -2427,6 +2427,7 @@ AggState* ExecInitAgg(Agg* node, EState* estate, int eflags)
         }
 #endif /* PGXC */
 
+        /* set up infrastructure for calling the transfn and finalfn */
         fmgr_info(transfn_oid, &peraggstate->transfn);
         fmgr_info_set_expr((Node*)transfnexpr, &peraggstate->transfn);
 
@@ -2442,7 +2443,13 @@ AggState* ExecInitAgg(Agg* node, EState* estate, int eflags)
         }
 #endif /* PGXC */
         peraggstate->aggCollation = aggref->inputcollid;
+        InitFunctionCallInfoData(peraggstate->transfn_fcinfo,
+                                 &peraggstate->transfn,
+                                 peraggstate->numTransInputs + 1,
+                                 peraggstate->aggCollation,
+                                (Node*)aggstate, NULL);
 
+        /* get info about relevant datatypes */
         get_typlenbyval(aggref->aggtype, &peraggstate->resulttypeLen, &peraggstate->resulttypeByVal);
         get_typlenbyval(aggtranstype, &peraggstate->transtypeLen, &peraggstate->transtypeByVal);
 

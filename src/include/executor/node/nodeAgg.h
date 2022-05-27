@@ -185,7 +185,7 @@ typedef struct AggStatePerAggData {
      * This field is a pre-initialized FunctionCallInfo struct used for
      * calling this aggregate's transfn.  We save a few cycles per row by not
      * re-initializing the unchanging fields; which isn't much, but it seems
-     * worth the extra space consumption.
+     * worth the extra space consumption. cached for transfn and collectfn now.
      */
     FunctionCallInfoData transfn_fcinfo;
 } AggStatePerAggData;
