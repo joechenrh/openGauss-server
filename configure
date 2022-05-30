@@ -4702,7 +4702,7 @@ fi
 # but has its own.  Also check other compiler-specific flags here.
 
 if test "$GCC" = yes -a "$ICC" = no; then
-  CFLAGS="$CFLAGS -Wall -Wpointer-arith -Wno-write-strings"
+  CFLAGS="$CFLAGS -Wall -Wpointer-arith -Wno-write-strings -fnon-call-exceptions -fno-common -freg-struct-return -pipe"
   if test "$autodepend" = yes; then
 	CFLAGS="$CFLAGS -fPIC"
   fi
