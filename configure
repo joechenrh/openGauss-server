@@ -4702,7 +4702,7 @@ fi
 # but has its own.  Also check other compiler-specific flags here.
 
 if test "$GCC" = yes -a "$ICC" = no; then
-  CFLAGS="$CFLAGS -Wall -Wpointer-arith -Wno-write-strings -fnon-call-exceptions -fno-common -freg-struct-return -pipe"
+  CFLAGS="$CFLAGS -Wall -Wpointer-arith -Wno-write-strings"
   if test "$autodepend" = yes; then
 	CFLAGS="$CFLAGS -fPIC"
   fi
@@ -29836,7 +29836,7 @@ platform_version=`sh ./src/get_PlatForm_str.sh`
 is_euler=`echo $platform_version | grep euleros`
 # New gcc version should be compatible to old one
 if test "$CC_VERSION" = "$NEW_GCC"; then
-  CFLAGS=" -std=c++11 -D_GLIBCXX_USE_CXX11_ABI=0 $CFLAGS -fno-aggressive-loop-optimizations -Wno-attributes -fno-omit-frame-pointer -fno-expensive-optimizations"
+  CFLAGS=" -D_GLIBCXX_USE_CXX11_ABI=0 $CFLAGS -Wno-attributes "
   CFLAGS="$CFLAGS -Wno-unused-but-set-variable"
   if test "$is_euler" != ""; then
     if test "${enable_cassert}" = no -o "${enable_memory_check}" = no -a "${enable_ut}" = no; then
